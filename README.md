@@ -1,61 +1,83 @@
-# AI-Powered Data Intelligence Platform
+# Tracelight — AI Data Intelligence Platform
 
-This is a monorepo containing the Next.js frontend and FastAPI backend for the AI-Powered Data Intelligence Platform.
+## Quick Start
 
-## Project Structure
+You need **two terminals** — one for the backend, one for the frontend.
 
-- `/backend`: Python FastAPI application, Celery workers, and Langchain AI orchestrator.
-- `/frontend`: Next.js React application (App Router).
+---
 
-## Prerequisites for Collaborators
+## Terminal 1 — Backend (FastAPI)
 
-1. **Python 3.9+**
-2. **Node.js 18+**
-3. **Redis** (Must be running locally on `localhost:6379` or specify via `REDIS_URL` in backend `.env`)
+```bash
+cd backend
 
-## Setup Instructions
+# First time only: install dependencies
+pip install fastapi uvicorn sqlalchemy pydantic
 
-### Backend Setup
+# Run the server
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
 
-1. Navigate to the `backend` directory:
-   ```bash
-   cd backend
-   ```
-2. Create a copy of the environment template:
-   ```bash
-   cp .env.example .env
-   ```
-   Fill in your `OPENAI_API_KEY` in the `.env` file.
-3. Run the setup script (Windows):
-   ```cmd
-   setup.bat
-   ```
-   Or manually (Mac/Linux):
-   ```bash
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
-4. Start the FastAPI server:
-   ```bash
-   uvicorn main:app --reload
-   ```
-5. In a separate terminal, start the Celery worker:
-   ```bash
-   celery -A worker.celery_app worker --loglevel=info
-   ```
+Backend runs at → **http://localhost:8000**  
+API docs at → **http://localhost:8000/docs**
 
-### Frontend Setup
+---
 
-1. Navigate to the `frontend` directory:
-   ```bash
-   cd frontend
-   ```
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Start the Next.js development server:
-   ```bash
-   npm run dev
-   ```
+## Terminal 2 — Frontend (Next.js)
+
+```bash
+cd frontend
+
+# First time only: install dependencies
+npm install
+
+# Run the dev server
+npm run dev
+```
+
+Frontend runs at → **http://localhost:3000**
+
+---
+
+## That's it — open http://localhost:3000 in your browser
+
+By default, the app runs in **demo mode** to give you an instant preview without actual web scraping. 
+
+---
+
+## ⚡ Enable True Agentic Scraping (Local GPU)
+
+You can run the true end-to-end AI scraper **locally on your GPU** using Ollama. No cloud APIs, no Redis, and no Celery required!
+
+### 1. Start Ollama
+Download and install [Ollama](https://ollama.com/), then pull a model:
+```bash
+ollama pull llama3.2
+```
+
+### 2. Enable Real Scraping
+In the `backend` folder, copy `.env.example` to `.env` and make sure these lines are set:
+```env
+# Enable true background scraping
+REAL_SCRAPING=true
+
+# Point to your local Ollama
+LOCAL_LLM_URL=http://localhost:11434/v1
+LOCAL_LLM_MODEL=llama3.2
+```
+
+### 3. Restart the backend
+The next time you click "Collect data", the system will actually visit the URLs, download the HTML, and feed it through your local Llama 3.2 model to extract the structured data perfectly.
+
+---
+
+## API Endpoints
+
+| Method | URL | Description |
+|--------|-----|-------------|
+| `GET`  | `/` | Health check |
+| `POST` | `/api/tasks` | Submit a new data collection prompt |
+| `GET`  | `/api/tasks` | List all past runs |
+| `GET`  | `/api/tasks/{id}` | Full task details + records |
+| `GET`  | `/api/tasks/{id}/status` | Lightweight status poll |
+| `GET`  | `/docs` | Interactive Swagger UI |
