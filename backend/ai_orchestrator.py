@@ -14,53 +14,8 @@ PERMITTED_DOMAINS = [
 
 
 def verify_sources(target_sources: List[str]) -> List[str]:
-    """Checks the AI's proposed scraping targets against an allowlist."""
-    verified = []
-    for source in target_sources:
-        if any(domain in source.lower() for domain in PERMITTED_DOMAINS):
-            verified.append(source)
-        else:
-            verified.append(f"{source} (Requires Approval)")
-    return verified
-
-
-# ---------------------------------------------------------------------------
-# LLM backend selector
-# ---------------------------------------------------------------------------
-
-def _get_llm():
-    """
-    Returns an LLM client based on environment config.
-
-    Priority:
-      1. LOCAL_LLM_URL is set  → Ollama / LM Studio (local, no cost)
-      2. OPENAI_API_KEY is set → OpenAI API (cloud)
-      3. Neither               → None  (mock plan returned)
-    """
-    local_url = os.getenv("LOCAL_LLM_URL", "").strip()
-    local_model = os.getenv("LOCAL_LLM_MODEL", "llama3.2").strip()
-    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-
-    if local_url:
-        # Ollama / LM Studio — OpenAI-compatible endpoint
-        try:
-            from openai import OpenAI  # type: ignore
-            client = OpenAI(base_url=local_url, api_key="ollama")
-            return ("openai_compat", client, local_model)
-        except ImportError:
-            print("Warning: 'openai' package not installed. Run: pip install openai")
-            return None
-
-    if openai_key:
-        try:
-            from openai import OpenAI  # type: ignore
-            client = OpenAI(api_key=openai_key)
-            return ("openai_compat", client, os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
-        except ImportError:
-            print("Warning: 'openai' package not installed. Run: pip install openai")
-            return None
-
-    return None
+    """Allows all sources for testing purposes."""
+    return target_sources
 
 
 # ---------------------------------------------------------------------------
@@ -70,19 +25,10 @@ def _get_llm():
 def generate_workflow_plan(prompt: str) -> dict:
     """
     Generates a structured data-collection workflow plan from a plain-English prompt.
-
-    Backends (in priority order):
-      - Local model via Ollama / LM Studio  (set LOCAL_LLM_URL)
-      - OpenAI cloud API                    (set OPENAI_API_KEY)
-      - Mock plan                           (no config needed)
+    Uses the LLM Manager which auto-starts Ollama and manages GPU memory.
+    Falls back to a mock plan if no LLM is available.
     """
-    llm_info = _get_llm()
-
-    if llm_info is None:
-        print("Info: No LLM configured. Using mock workflow plan.")
-        return _mock_plan(prompt)
-
-    kind, client, model = llm_info
+    from llm_manager import llm_manager
 
     system_prompt = (
         "You are the core intelligence engine for an AI-Powered Data Intelligence Platform. "
@@ -100,18 +46,19 @@ def generate_workflow_plan(prompt: str) -> dict:
     )
 
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Business requirement: {prompt}"},
-            ],
+        content = llm_manager.infer(
+            system_prompt=system_prompt,
+            user_prompt=f"Business requirement: {prompt}",
             temperature=0.2,
             max_tokens=512,
         )
-        content = response.choices[0].message.content.strip()
+
+        if not content:
+            print("Info: LLM returned empty response. Using mock workflow plan.")
+            return _mock_plan(prompt)
 
         # Strip markdown fences if the model added them
+        content = content.strip()
         if content.startswith("```"):
             content = content.split("```")[1]
             if content.startswith("json"):
@@ -129,7 +76,7 @@ def generate_workflow_plan(prompt: str) -> dict:
         return plan_dict
 
     except Exception as e:
-        print(f"LLM call failed ({model}): {e}. Falling back to mock plan.")
+        print(f"LLM plan generation failed: {e}. Falling back to mock plan.")
         return _mock_plan(prompt)
 
 

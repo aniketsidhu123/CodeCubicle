@@ -184,16 +184,43 @@ export default function Home() {
     setCurrentStep(2);
     setPillText("Collecting");
 
-    // If backend returned data, poll for results; otherwise use demo
-    let finalRows: DataRecord[];
+    let finalRows: DataRecord[] = [];
 
     if (apiResult && apiResult.id) {
-      // Poll backend for completion
+      // Poll backend for completion and incrementally stream records to UI
       let attempts = 0;
       let taskData = null;
-      while (attempts < 30) {
-        await sleep(500);
+      let processedRecordCount = 0;
+      
+      while (attempts < 60) {
+        await sleep(1000);
         taskData = await fetchTaskDetails(apiResult.id);
+        
+        // Stream new records as they arrive from the backend
+        if (taskData?.records && taskData.records.length > processedRecordCount) {
+          const newRecords = taskData.records.slice(processedRecordCount);
+          processedRecordCount = taskData.records.length;
+          
+          for (let i = 0; i < newRecords.length; i++) {
+             const r = newRecords[i];
+             const mappedR = {
+               ...(r as Record<string, unknown>),
+               id: processedRecordCount - newRecords.length + i,
+               source_index: Math.max(0, SOURCES.indexOf(String(r.source_host))),
+             } as DataRecord;
+             
+             finalRows.push(mappedR);
+             setRows((prev) => [...prev, mappedR]);
+             setLitSources((prev) => {
+               const next = new Set(prev);
+               next.add(mappedR.source_index);
+               return next;
+             });
+             setPulses((prev) => [...prev, { s: mappedR.source_index, t: 0 }]);
+             await sleep(130);
+          }
+        }
+        
         if (
           taskData &&
           (taskData.status === "Ready" || taskData.status === "Completed")
@@ -202,34 +229,22 @@ export default function Home() {
         }
         attempts++;
       }
-
-      if (taskData?.records?.length) {
-        finalRows = taskData.records.map(
-          (r: Record<string, unknown>, i: number) => ({
-            ...r,
-            id: i,
-            source_index: Math.max(0, SOURCES.indexOf(String(r.source_host))),
-          })
-        );
-      } else {
-        finalRows = generateDemoRecords(Date.now() % 9973, 22);
-      }
     } else {
-      finalRows = generateDemoRecords(Date.now() % 9973, 22);
-    }
+      // Fallback: Demo mode animation
+      const demoRows = generateDemoRecords(Date.now() % 9973, 22);
+      finalRows = demoRows;
+      const newLit = new Set<number>();
+      const newPulses: Array<{ s: number; t: number }> = [];
+      for (let i = 0; i < demoRows.length; i++) {
+        const r = demoRows[i];
+        newLit.add(r.source_index);
+        newPulses.push({ s: r.source_index, t: 0 });
 
-    // Animate records arriving
-    const newLit = new Set<number>();
-    const newPulses: Array<{ s: number; t: number }> = [];
-    for (let i = 0; i < finalRows.length; i++) {
-      const r = finalRows[i];
-      newLit.add(r.source_index);
-      newPulses.push({ s: r.source_index, t: 0 });
-
-      setRows((prev) => [...prev, r]);
-      setLitSources(new Set(newLit));
-      setPulses([...newPulses]);
-      await sleep(130);
+        setRows((prev) => [...prev, r]);
+        setLitSources(new Set(newLit));
+        setPulses([...newPulses]);
+        await sleep(130);
+      }
     }
 
     // Step 4: Cleaning

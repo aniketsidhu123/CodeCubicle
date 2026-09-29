@@ -1,61 +1,55 @@
+"""
+Scraper Agent — Fetches web pages and extracts structured data using the LLM Manager.
+"""
+
 import os
 import json
 from typing import List
 import concurrent.futures
-import threading
-
-llm_lock = threading.Lock()
 
 
 def fetch_html(url: str) -> str:
     """
-    Fetches the raw HTML from the target URL.
-    For production, consider using Playwright/Selenium for JS-heavy sites.
+    Fetches the raw HTML from the target URL using Playwright.
+    This properly renders JS-heavy frameworks (React, Angular, Vue)
+    and successfully bypasses basic bot walls.
     """
     try:
-        import requests  # type: ignore
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        return response.text
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            # Launch Chromium in headless mode
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            # wait_until="networkidle" ensures client-side rendering completes
+            page.goto(url, wait_until="networkidle", timeout=20000)
+            html = page.content()
+            browser.close()
+            return html
+    except ImportError:
+        print("Playwright not installed! Falling back to requests...")
+        try:
+            import requests  # type: ignore
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            return response.text
+        except Exception as fallback_e:
+            print(f"Fallback fetch failed for {url}: {fallback_e}")
+            return ""
     except Exception as e:
-        print(f"Failed to fetch {url}: {e}")
+        print(f"Playwright failed to fetch {url}: {e}")
         return ""
 
 
-def _get_llm():
-    local_url = os.getenv("LOCAL_LLM_URL", "").strip()
-    local_model = os.getenv("LOCAL_LLM_MODEL", "llama3.2").strip()
-    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-
-    if local_url:
-        try:
-            from openai import OpenAI  # type: ignore
-            client = OpenAI(base_url=local_url, api_key="ollama")
-            return ("openai_compat", client, local_model)
-        except ImportError:
-            return None
-
-    if openai_key:
-        try:
-            from openai import OpenAI  # type: ignore
-            client = OpenAI(api_key=openai_key)
-            return ("openai_compat", client, os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
-        except ImportError:
-            return None
-    return None
-
 def extract_data_with_llm(html_content: str, data_schema: dict) -> list:
     """
-    Uses the LLM to extract and structure data from HTML based on the provided schema.
-    Falls back to mock data if no LLM is configured.
+    Uses the LLM Manager to extract and structure data from HTML.
+    The LLM Manager handles server lifecycle, GPU memory, and crash recovery automatically.
     """
-    llm_info = _get_llm()
-    
-    if not llm_info:
-        print("Warning: No LLM configured. Returning mock extracted data.")
-        mock_record = {key: "mock_value" for key in data_schema.keys()}
-        return [mock_record]
+    # Lazy import to avoid circular dependency at module load time
+    from llm_manager import llm_manager
 
     # Lazy imports
     try:
@@ -66,9 +60,16 @@ def extract_data_with_llm(html_content: str, data_schema: dict) -> list:
 
     try:
         soup = BeautifulSoup(html_content, "html.parser")
-        text_content = soup.get_text(separator=" ", strip=True)[:8000]
 
-        kind, client, model = llm_info
+        # Remove noisy elements to drastically reduce context size for faster GPU inference
+        for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "svg", "form", "iframe"]):
+            tag.extract()
+
+        text_content = soup.get_text(separator=" ", strip=True)[:2000]
+
+        if not text_content.strip():
+            print("Warning: No extractable text content found in HTML.")
+            return []
 
         system_prompt = (
             "You are an expert data extraction agent. Extract records from the following "
@@ -77,19 +78,19 @@ def extract_data_with_llm(html_content: str, data_schema: dict) -> list:
             f"Schema:\n{json.dumps(data_schema, indent=2)}"
         )
 
-        # We lock the local LLM inference so we don't blow up the GPU VRAM
-        with llm_lock:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Web Page Text:\n{text_content}"}
-                ],
-                temperature=0,
-                max_tokens=2048,
-            )
+        # The LLM Manager handles thread safety, GPU memory, and crash recovery
+        content = llm_manager.infer(
+            system_prompt=system_prompt,
+            user_prompt=f"Web Page Text:\n{text_content}",
+            temperature=0.0,
+            max_tokens=2048,
+        )
 
-        content = response.choices[0].message.content.strip()
+        if not content:
+            print("Warning: LLM returned empty response.")
+            return []
+
+        content = content.strip()
         if content.startswith("```json"):
             content = content[7:-3]
         elif content.startswith("```"):
@@ -98,6 +99,9 @@ def extract_data_with_llm(html_content: str, data_schema: dict) -> list:
         records = json.loads(content)
         return records if isinstance(records, list) else []
 
+    except json.JSONDecodeError as e:
+        print(f"LLM returned invalid JSON: {e}")
+        return []
     except Exception as e:
         print(f"Extraction failed: {e}")
         return []
@@ -105,7 +109,8 @@ def extract_data_with_llm(html_content: str, data_schema: dict) -> list:
 
 def run_scraping_job(target_sources: list, data_schema: dict) -> list:
     """
-    Orchestrates the scraping process across multiple sources concurrently for speed.
+    Orchestrates the scraping process across multiple sources.
+    Network fetches run concurrently; LLM inference is serialized by the LLM Manager.
     """
     all_records: List[dict] = []
 
@@ -113,7 +118,7 @@ def run_scraping_job(target_sources: list, data_schema: dict) -> list:
         if "(Requires Approval)" in url:
             print(f"Skipping unapproved source: {url}")
             return []
-            
+
         print(f"Scraping {url}...")
         if not url.startswith("http"):
             url = "https://" + url
@@ -127,10 +132,10 @@ def run_scraping_job(target_sources: list, data_schema: dict) -> list:
             record["_source_url"] = url
         return records
 
-    # Run scraping concurrently!
+    # Run scraping concurrently — network I/O is parallel, LLM is serialized by llm_manager
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         results = executor.map(process_url, target_sources)
-        
+
         for records in results:
             all_records.extend(records)
 

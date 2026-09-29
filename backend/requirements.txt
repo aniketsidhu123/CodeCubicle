@@ -4,6 +4,9 @@ pydantic>=2.4.0
 SQLAlchemy>=2.0.21
 requests>=2.31.0
 beautifulsoup4>=4.12.2
+playwright
+transformers
+accelerate
 
 # Optional: only needed if USE_CELERY=true
 # celery>=5.3.4

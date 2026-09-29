@@ -90,8 +90,9 @@ export default function Constellation({
       col: string,
       a: number
     ) => {
+      if (!isFinite(a) || !isFinite(r) || !isFinite(x) || !isFinite(y) || r <= 0) return;
       const g = cx.createRadialGradient(x, y, 0, x, y, r);
-      g.addColorStop(0, col.replace("A", String(a)));
+      g.addColorStop(0, col.replace("A", String(Math.max(0, Math.min(1, a)))));
       g.addColorStop(1, col.replace("A", "0"));
       cx.fillStyle = g;
       cx.beginPath();

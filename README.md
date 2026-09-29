@@ -1,20 +1,25 @@
 # Tracelight — AI Data Intelligence Platform
 
-## Quick Start
+An end-to-end AI-powered data intelligence scraper built for Windows with local GPU acceleration.
+
+## 🚀 Quick Start
 
 You need **two terminals** — one for the backend, one for the frontend.
 
 ---
 
-## Terminal 1 — Backend (FastAPI)
+### Terminal 1 — Backend (FastAPI + GPU inference)
 
 ```bash
 cd backend
 
-# First time only: install dependencies
-pip install fastapi uvicorn sqlalchemy pydantic
+# 1. Install dependencies
+pip install fastapi uvicorn sqlalchemy pydantic requests playwright
 
-# Run the server
+# 2. Install Playwright browser for true JS-rendering and anti-bot bypass
+python -m playwright install chromium
+
+# 3. Run the backend server
 python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -23,15 +28,15 @@ API docs at → **http://localhost:8000/docs**
 
 ---
 
-## Terminal 2 — Frontend (Next.js)
+### Terminal 2 — Frontend (Next.js)
 
 ```bash
 cd frontend
 
-# First time only: install dependencies
+# 1. Install dependencies
 npm install
 
-# Run the dev server
+# 2. Run the dev server
 npm run dev
 ```
 
@@ -39,35 +44,31 @@ Frontend runs at → **http://localhost:3000**
 
 ---
 
-## That's it — open http://localhost:3000 in your browser
+## ⚡ Zero-Dependency GPU AI Scraping
 
-By default, the app runs in **demo mode** to give you an instant preview without actual web scraping. 
+This platform features a **Custom LLM Manager** that automatically handles your local AI inference without requiring you to manually start applications!
 
----
+When you click **Collect data** on the frontend:
+1. The backend automatically boots up `Ollama` in the background.
+2. The agent uses `Playwright` headless Chromium to silently visit job boards and bypass basic anti-bot systems by waiting for React/Angular JS to fully load.
+3. The raw HTML is securely chunked and passed into your local GPU's VRAM (via Llama 3.2).
+4. The GPU rips through the HTML and streams extracted JSON records back to the UI.
+5. After a few minutes of inactivity, the custom LLM manager automatically cleans the AI model out of your VRAM so your laptop stays fast.
 
-## ⚡ Enable True Agentic Scraping (Local GPU)
+Ensure your NVIDIA drivers are up to date to enjoy full CUDA hardware acceleration.
 
-You can run the true end-to-end AI scraper **locally on your GPU** using Ollama. No cloud APIs, no Redis, and no Celery required!
+### Environment Setup
+The system works fully locally out-of-the-box. Ensure your `backend/.env` file looks like this:
 
-### 1. Start Ollama
-Download and install [Ollama](https://ollama.com/), then pull a model:
-```bash
-ollama pull llama3.2
-```
-
-### 2. Enable Real Scraping
-In the `backend` folder, copy `.env.example` to `.env` and make sure these lines are set:
 ```env
 # Enable true background scraping
 REAL_SCRAPING=true
 
-# Point to your local Ollama
+# Ollama Auto-Manager
 LOCAL_LLM_URL=http://localhost:11434/v1
 LOCAL_LLM_MODEL=llama3.2
+LLM_USE_GPU=true
 ```
-
-### 3. Restart the backend
-The next time you click "Collect data", the system will actually visit the URLs, download the HTML, and feed it through your local Llama 3.2 model to extract the structured data perfectly.
 
 ---
 
@@ -75,9 +76,7 @@ The next time you click "Collect data", the system will actually visit the URLs,
 
 | Method | URL | Description |
 |--------|-----|-------------|
-| `GET`  | `/` | Health check |
 | `POST` | `/api/tasks` | Submit a new data collection prompt |
 | `GET`  | `/api/tasks` | List all past runs |
 | `GET`  | `/api/tasks/{id}` | Full task details + records |
 | `GET`  | `/api/tasks/{id}/status` | Lightweight status poll |
-| `GET`  | `/docs` | Interactive Swagger UI |
