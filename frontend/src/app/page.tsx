@@ -8,6 +8,10 @@ import {
   generateDemoPlan,
   submitTask,
   fetchTaskDetails,
+  fetchAllTasks,
+  cancelTask,
+  retryTask,
+  deleteTask,
   type DataRecord,
   type TaskRun,
 } from "./lib/api";
@@ -57,22 +61,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState(1);
 
   // Runs history
-  const [runs, setRuns] = useState<TaskRun[]>([
-    {
-      id: 1,
-      prompt: "Data engineer jobs in Bengaluru, last 7 days",
-      rows: generateDemoRecords(7, 14),
-      dupes: 3,
-      when: "Yesterday",
-    },
-    {
-      id: 2,
-      prompt: "Design roles at Series A startups",
-      rows: generateDemoRecords(21, 18),
-      dupes: 2,
-      when: "Mon",
-    },
-  ]);
+  const [runs, setRuns] = useState<TaskRun[]>([]);
   const [currentRunId, setCurrentRunId] = useState(-1);
 
   // Canvas props
@@ -123,18 +112,47 @@ export default function Home() {
     [toast]
   );
 
-  // ---- Initialize with demo data ----
-  useEffect(() => {
-    const demoRun = runs[1]; // Second run as default view
-    if (demoRun) {
-      setRows(demoRun.rows);
-      setLitSources(new Set(demoRun.rows.map((r) => r.source_index)));
-      setDupes(demoRun.dupes);
-      setCurrentRunId(2);
-      setPlan(generateDemoPlan(demoRun.prompt));
+  const reloadHistory = useCallback(async () => {
+    const history = await fetchAllTasks();
+    if (history) {
+      const mappedRuns = history.map((t: any) => ({
+        id: t.id,
+        prompt: t.prompt,
+        rows: [],
+        dupes: t.duplicates_removed || 0,
+        when: new Date(t.created_at).toLocaleString(),
+        status: t.status,
+      }));
+      setRuns(mappedRuns);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    reloadHistory();
+  }, [reloadHistory]);
+
+  const handleCancel = async (id: number) => {
+    await cancelTask(id);
+    toast("Task cancelled");
+    reloadHistory();
+  };
+
+  const handleDelete = async (id: number) => {
+    await deleteTask(id);
+    toast("Task deleted");
+    if (currentRunId === id) {
+      setRows([]);
+      setPlan({});
+      setCurrentRunId(-1);
+    }
+    reloadHistory();
+  };
+
+  const handleRetry = async (id: number) => {
+    await retryTask(id);
+    toast("Task retrying");
+    reloadHistory();
+  };
 
   // ---- Source click from constellation ----
   const handleSourceClick = useCallback(
@@ -195,6 +213,11 @@ export default function Home() {
       while (attempts < 60) {
         await sleep(1000);
         taskData = await fetchTaskDetails(apiResult.id);
+        if (taskData?.progress_detail) {
+           setPillText(taskData.progress_detail);
+        } else if (taskData?.status) {
+           setPillText(taskData.status);
+        }
         
         // Stream new records as they arrive from the backend
         if (taskData?.records && taskData.records.length > processedRecordCount) {
@@ -279,22 +302,38 @@ export default function Home() {
 
   // ---- Load past run ----
   const loadRun = useCallback(
-    (run: TaskRun) => {
+    async (run: TaskRun) => {
       if (busy) return;
-      setRows(run.rows);
-      setLitSources(new Set(run.rows.map((r) => r.source_index)));
-      setDupes(run.dupes);
+      
+      const taskData = await fetchTaskDetails(run.id);
+      let mappedRows: DataRecord[] = [];
+      let mappedDupes = run.dupes;
+      let mappedPlan = plan;
+      
+      if (taskData) {
+        mappedRows = (taskData.records || []).map((r: any, i: number) => ({
+           ...(r as Record<string, unknown>),
+           id: i,
+           source_index: Math.max(0, SOURCES.indexOf(String(r.source_host))),
+        }));
+        mappedDupes = taskData.duplicates_removed || 0;
+        mappedPlan = taskData.plan || generateDemoPlan(run.prompt);
+      }
+      
+      setRows(mappedRows);
+      setLitSources(new Set(mappedRows.map((r) => r.source_index)));
+      setDupes(mappedDupes);
       setFilterSource(-1);
       setHighlightSource(-1);
       setSelectedId(-1);
       setCurrentRunId(run.id);
-      setPlan(generateDemoPlan(run.prompt));
+      setPlan(mappedPlan);
       setPrompt(run.prompt);
       setCurrentStep(4);
-      setPillText("Ready");
-      setPillBusy(false);
+      setPillText(run.status || "Ready");
+      setPillBusy(run.status === "Scraping" || run.status === "Processing" || run.status === "Planning");
     },
-    [busy]
+    [busy, plan]
   );
 
   // ---- Inspect row ----
@@ -310,10 +349,10 @@ export default function Home() {
     [rows]
   );
 
-  // ---- Copy CSV ----
-  const copyCSV = useCallback(() => {
+  // ---- Download CSV ----
+  const downloadCSV = useCallback(() => {
     if (!filteredRows.length) {
-      toast("Nothing to copy yet");
+      toast("Nothing to download yet");
       return;
     }
     const csv =
@@ -331,8 +370,34 @@ export default function Home() {
           ].join(",")
         )
         .join("\n");
-    copyToClipboard(csv, `${filteredRows.length} rows copied as CSV`);
-  }, [filteredRows, copyToClipboard, toast]);
+        
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `tracelight_export_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    toast("CSV downloaded");
+  }, [filteredRows, toast]);
+
+  // ---- Download JSON ----
+  const downloadJSON = useCallback(() => {
+    if (!filteredRows.length) {
+      toast("Nothing to download yet");
+      return;
+    }
+    const blob = new Blob([JSON.stringify(filteredRows, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `tracelight_export_${Date.now()}.json`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    toast("JSON downloaded");
+  }, [filteredRows, toast]);
 
   // ---- Copy plan JSON ----
   const copyPlanJSON = useCallback(() => {
@@ -444,16 +509,22 @@ export default function Home() {
             <h2>Past runs</h2>
             <div id="runs">
               {runs.map((run) => (
-                <button
-                  key={run.id}
-                  className={`run-btn${run.id === currentRunId ? " sel" : ""}`}
-                  onClick={() => loadRun(run)}
-                >
-                  {run.prompt}
-                  <small>
-                    {run.rows.length} records · {run.when}
-                  </small>
-                </button>
+                <div key={run.id} className={`run-btn-wrap${run.id === currentRunId ? " sel" : ""}`}>
+                  <button
+                    className="run-btn"
+                    onClick={() => loadRun(run)}
+                  >
+                    {run.prompt}
+                    <small>
+                      {run.when} · {run.status}
+                    </small>
+                  </button>
+                  <div className="run-actions">
+                     {run.status === "Failed" && <button className="act-btn" onClick={() => handleRetry(run.id)}>Retry</button>}
+                     {(run.status !== "Completed" && run.status !== "Ready" && run.status !== "Failed" && run.status !== "Cancelled") && <button className="act-btn" onClick={() => handleCancel(run.id)}>Cancel</button>}
+                     <button className="act-btn" onClick={() => handleDelete(run.id)}>Delete</button>
+                  </div>
+                </div>
               ))}
             </div>
           </aside>
@@ -495,8 +566,11 @@ export default function Home() {
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                   />
-                  <button className="btn" onClick={copyCSV}>
-                    Copy as CSV
+                  <button className="btn" onClick={downloadCSV}>
+                    Download CSV
+                  </button>
+                  <button className="btn" onClick={downloadJSON}>
+                    Download JSON
                   </button>
                 </div>
 
@@ -585,8 +659,18 @@ export default function Home() {
             {activeTab === 2 && (
               <div>
                 <div className="tools">
-                  <button className="btn" onClick={copyPlanJSON}>
-                    Copy plan JSON
+                  <button className="btn" onClick={() => {
+                     const blob = new Blob([JSON.stringify(plan, null, 2)], { type: "application/json" });
+                     const url = URL.createObjectURL(blob);
+                     const link = document.createElement("a");
+                     link.href = url;
+                     link.setAttribute("download", `tracelight_plan_${Date.now()}.json`);
+                     document.body.appendChild(link);
+                     link.click();
+                     document.body.removeChild(link);
+                     toast("Plan JSON downloaded");
+                  }}>
+                    Download plan JSON
                   </button>
                 </div>
                 <pre className="plan-pre">

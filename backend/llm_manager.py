@@ -5,6 +5,9 @@ and gracefully unloading it after a period of inactivity to free GPU resources.
 """
 
 import os
+# Force HF_HOME to be an absolute path in the backend directory
+os.environ["HF_HOME"] = os.path.abspath(os.path.join(os.path.dirname(__file__), "models"))
+
 import time
 import threading
 import atexit
@@ -48,7 +51,8 @@ class HuggingFaceManager:
                     "text-generation",
                     model=MODEL_NAME,
                     torch_dtype=torch.bfloat16 if device_map != "cpu" else torch.float32,
-                    device_map=device_map
+                    device_map=device_map,
+                    trust_remote_code=True
                 )
                 print(f"[LLM Manager] Model '{MODEL_NAME}' successfully loaded ({device_map}).")
             except Exception as e:

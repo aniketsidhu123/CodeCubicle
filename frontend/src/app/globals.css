@@ -382,6 +382,11 @@ header b {
    Past Runs Sidebar
    ============================================================ */
 
+.run-btn-wrap {
+  position: relative;
+  margin-bottom: 8px;
+}
+
 .run-btn {
   display: block;
   width: 100%;
@@ -390,13 +395,12 @@ header b {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 10px;
-  margin-bottom: 8px;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
-.run-btn:hover,
-.run-btn.sel {
+.run-btn-wrap:hover .run-btn,
+.run-btn-wrap.sel .run-btn {
   border-color: var(--c1);
   box-shadow: 0 0 16px -6px var(--c1);
 }
@@ -404,6 +408,29 @@ header b {
 .run-btn small {
   display: block;
   color: var(--mut);
+}
+
+.run-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 0 10px;
+}
+
+.act-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--mut);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.act-btn:hover {
+  border-color: var(--c1);
+  color: var(--c1);
 }
 
 /* ============================================================

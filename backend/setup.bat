@@ -20,11 +20,11 @@ if not exist "venv" (
 )
 call venv\Scripts\activate
 
-echo Installing PyTorch with CUDA acceleration...
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-
 echo Installing backend dependencies...
 pip install -r requirements.txt
+
+echo Installing PyTorch with CUDA acceleration (this overrides the CPU-only torch)...
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --force-reinstall --no-deps
 
 echo Installing Playwright browser (Chromium)...
 python -m playwright install chromium
@@ -32,7 +32,8 @@ python -m playwright install chromium
 echo.
 echo [3/4] Initializing Hugging Face Model...
 echo Downloading the AI model from Hugging Face into the local cache...
-python -c "try: import llm_manager; llm_manager.llm_manager.ensure_model() \nexcept Exception as e: print('\nWARNING: Could not pull AI model automatically:', e)"
+set HF_HOME=%cd%\models
+python -c "import llm_manager; llm_manager.llm_manager.ensure_model()" || echo WARNING: Could not pull AI model automatically.
 
 echo.
 echo [4/4] Setting up Frontend...

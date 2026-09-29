@@ -23,6 +23,6 @@ Thumbs.db
 .coverage
 
 # AI Models & Hugging Face Cache
-backend/.models/
+backend/models/
 .cache/
 huggingface/

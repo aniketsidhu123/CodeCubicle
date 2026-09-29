@@ -227,4 +227,34 @@ export async function fetchAllTasks() {
   }
 }
 
+export async function cancelTask(taskId: number) {
+  try {
+    const res = await fetch(`${API_BASE}/api/tasks/${taskId}/cancel`, { method: "POST" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function retryTask(taskId: number) {
+  try {
+    const res = await fetch(`${API_BASE}/api/tasks/${taskId}/retry`, { method: "POST" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteTask(taskId: number) {
+  try {
+    const res = await fetch(`${API_BASE}/api/tasks/${taskId}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 export { SOURCES };

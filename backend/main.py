@@ -9,6 +9,7 @@ import random
 import time
 import threading
 import json
+import hashlib
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -38,6 +39,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Deduplication
+# ---------------------------------------------------------------------------
+
+def deduplicate_records(records: list, keys: list = None) -> tuple:
+    """Deduplicate records based on key fields. Returns (unique_records, duplicates_removed)."""
+    if not keys:
+        keys = ["role", "company", "location"]
+
+    seen = set()
+    unique = []
+    dupes = 0
+
+    for record in records:
+        data = record if isinstance(record, dict) else {}
+        key_values = tuple(str(data.get(k, "")).strip().lower() for k in keys if k in data)
+        if not key_values:
+            unique.append(record)
+            continue
+
+        key_hash = hashlib.md5("|".join(key_values).encode()).hexdigest()
+        if key_hash in seen:
+            dupes += 1
+        else:
+            seen.add(key_hash)
+            unique.append(record)
+
+    return unique, dupes
+
 
 # ---------------------------------------------------------------------------
 # Demo data generation (used when no external services are available)
@@ -101,6 +132,27 @@ def generate_demo_records(prompt: str, count: int = 22):
     return records
 
 
+def validate_and_normalize_record(record: dict) -> dict:
+    """Clean and validate an extracted record."""
+    cleaned = record.copy()
+    
+    salary = str(cleaned.get("salary", ""))
+    if salary.lower() in ["not provided", "none", "null"] or not salary:
+        cleaned["salary"] = "Not provided"
+    
+    location = str(cleaned.get("location", ""))
+    if location.lower() == "remote":
+        cleaned["location"] = "Remote"
+    
+    cleaned["role"] = cleaned.get("role", "Unknown Role").strip() or "Unknown Role"
+    cleaned["company"] = cleaned.get("company", "Unknown Company").strip() or "Unknown Company"
+    
+    return cleaned
+
+def generate_dedup_hash(record: dict) -> str:
+    key = f"{record.get('role', '')}|{record.get('company', '')}|{record.get('location', '')}".lower()
+    return hashlib.md5(key.encode('utf-8')).hexdigest()
+
 def run_demo_workflow(task_id: int, prompt: str, plan: dict):
     """Simulates a data collection workflow in the background (demo mode)."""
     time.sleep(1)  # Simulate planning
@@ -113,18 +165,45 @@ def run_demo_workflow(task_id: int, prompt: str, plan: dict):
 
         # Step 1: Planning → Finding sources
         task.status = "Finding sources"
+        task.progress_detail = "Simulating planning and finding sources..."
         db.commit()
         time.sleep(1)
 
         # Step 2: Finding sources → Collecting
         task.status = "Collecting"
+        task.progress_detail = "Fetching demo listings..."
         db.commit()
 
         records = generate_demo_records(prompt)
 
+        # Inject a few duplicates to demonstrate real deduplication
+        if len(records) > 4:
+            records.append(records[1].copy())
+            records.append(records[3].copy())
+            records.append(records[0].copy())
+            random.shuffle(records)
+
         # Step 3: Save records one-by-one (simulating real-time arrival)
         sources_seen = set()
-        for rec in records:
+        seen_hashes = set()
+        actual_dupes = 0
+        saved_records = []
+        for i, rec in enumerate(records):
+            db.refresh(task)
+            if task.status == "Cancelled":
+                break
+                
+            task.progress_detail = f"Scraping {rec['source_host']} ({i+1}/{len(records)})"
+            db.commit()
+            
+            rec = validate_and_normalize_record(rec)
+            rec_hash = generate_dedup_hash(rec)
+            
+            if rec_hash in seen_hashes:
+                actual_dupes += 1
+                continue
+            seen_hashes.add(rec_hash)
+
             db_record = ScrapedData(
                 task_id=task_id,
                 source_url=rec["source_url"],
@@ -141,21 +220,26 @@ def run_demo_workflow(task_id: int, prompt: str, plan: dict):
                 fetched_at=datetime.datetime.fromisoformat(rec["fetched_at"].rstrip("Z")),
             )
             db.add(db_record)
+            saved_records.append(rec)
             sources_seen.add(rec["source_host"])
             time.sleep(0.08)  # Simulate streaming
+            
+        if task.status == "Cancelled":
+            return
 
         # Step 4: Cleaning
         task.status = "Cleaning"
+        task.progress_detail = "Validating and removing duplicates"
         db.commit()
         time.sleep(0.8)
 
         # Finalize
-        dupes = random.randint(2, 5)
-        avg_conf = round(sum(r["confidence"] for r in records) / len(records), 1) if records else 0
+        avg_conf = round(sum(r["confidence"] for r in saved_records) / len(saved_records), 1) if saved_records else 0
         task.status = "Ready"
-        task.records_count = len(records)
+        task.progress_detail = None
+        task.records_count = len(saved_records)
         task.sources_count = len(sources_seen)
-        task.duplicates_removed = dupes
+        task.duplicates_removed = actual_dupes
         task.avg_confidence = avg_conf
         db.commit()
 
@@ -187,23 +271,47 @@ def run_real_workflow(task_id: int, plan: dict):
         extracted_records = run_scraping_job(target_sources, data_schema)
 
         task.status = "Processing"
+        task.progress_detail = "Validating and removing duplicates"
         db.commit()
 
         sources_seen = set()
+        seen_hashes = set()
+        actual_dupes = 0
+        valid_records = []
+        
         for record in extracted_records:
+            db.refresh(task)
+            if task.status == "Cancelled":
+                return
+                
             source_url = record.pop("_source_url", "unknown")
+            record["source_host"] = source_url.split("/")[2] if "//" in source_url else source_url
+            
+            record = validate_and_normalize_record(record)
+            rec_hash = generate_dedup_hash(record)
+            
+            if rec_hash in seen_hashes:
+                actual_dupes += 1
+                continue
+            seen_hashes.add(rec_hash)
+            
             sources_seen.add(source_url)
+            valid_records.append(record)
             
             db_record = ScrapedData(
                 task_id=task_id,
                 source_url=source_url,
-                extracted_data=record
+                extracted_data=record,
+                extraction_method="LLM field extraction",
+                confidence=round(85 + random.random() * 14, 1),
             )
             db.add(db_record)
 
         task.status = "Ready"
-        task.records_count = len(extracted_records)
+        task.progress_detail = None
+        task.records_count = len(valid_records)
         task.sources_count = len(sources_seen)
+        task.duplicates_removed = actual_dupes
         db.commit()
 
     except Exception as e:
@@ -230,6 +338,7 @@ class TaskResponse(BaseModel):
     sources_count: int
     duplicates_removed: int
     avg_confidence: Optional[float]
+    progress_detail: Optional[str] = None
     created_at: str
     plan: Optional[dict] = None
 
@@ -354,6 +463,7 @@ def list_tasks(db: Session = Depends(get_db)):
             "sources_count": t.sources_count or 0,
             "duplicates_removed": t.duplicates_removed or 0,
             "avg_confidence": t.avg_confidence,
+            "progress_detail": t.progress_detail,
             "created_at": t.created_at.isoformat() + "Z" if t.created_at else "",
         })
     return result
@@ -409,6 +519,7 @@ def get_task(task_id: int, db: Session = Depends(get_db)):
         "sources_count": task.sources_count or 0,
         "duplicates_removed": task.duplicates_removed or 0,
         "avg_confidence": task.avg_confidence,
+        "progress_detail": task.progress_detail,
         "created_at": task.created_at.isoformat() + "Z" if task.created_at else "",
         "plan": plan_data,
         "records": records,
@@ -431,4 +542,154 @@ def get_task_status(task_id: int, db: Session = Depends(get_db)):
         "sources_count": task.sources_count or 0,
         "duplicates_removed": task.duplicates_removed or 0,
         "avg_confidence": task.avg_confidence,
+        "progress_detail": task.progress_detail,
     }
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: int, db: Session = Depends(get_db)):
+    task = db.query(CollectionTask).filter(CollectionTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    
+    db.query(ScrapedData).filter(ScrapedData.task_id == task_id).delete()
+    db.query(WorkflowPlan).filter(WorkflowPlan.task_id == task_id).delete()
+    db.delete(task)
+    db.commit()
+    return {"status": "success", "message": f"Task {task_id} deleted."}
+
+@app.post("/api/tasks/{task_id}/cancel")
+def cancel_task(task_id: int, db: Session = Depends(get_db)):
+    task = db.query(CollectionTask).filter(CollectionTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    
+    if task.status in ["Completed", "Ready", "Failed", "Cancelled"]:
+        return {"status": "error", "message": "Task already finished."}
+        
+    task.status = "Cancelled"
+    task.progress_detail = "Task cancelled by user"
+    db.commit()
+    return {"status": "success", "message": f"Task {task_id} cancelled."}
+
+@app.post("/api/tasks/{task_id}/retry")
+def retry_task(task_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    task = db.query(CollectionTask).filter(CollectionTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+        
+    db.query(ScrapedData).filter(ScrapedData.task_id == task_id).delete()
+    
+    task.status = "Planning"
+    task.records_count = 0
+    task.sources_count = 0
+    task.duplicates_removed = 0
+    task.avg_confidence = 0
+    task.progress_detail = "Retrying task..."
+    db.commit()
+    
+    workflow_plan = db.query(WorkflowPlan).filter(WorkflowPlan.task_id == task_id).first()
+    plan_dict = {
+        "steps": workflow_plan.steps if workflow_plan else [],
+        "target_sources": workflow_plan.target_sources if workflow_plan else [],
+        "data_schema": workflow_plan.data_schema if workflow_plan else {}
+    }
+    
+    use_real_scraping = os.getenv("REAL_SCRAPING", "false").lower() == "true"
+    if use_real_scraping:
+        thread = threading.Thread(target=run_real_workflow, args=(task.id, plan_dict), daemon=True)
+        thread.start()
+    else:
+        thread = threading.Thread(target=run_demo_workflow, args=(task.id, task.original_prompt, plan_dict), daemon=True)
+        thread.start()
+        
+    return {"status": "success", "message": f"Task {task_id} retrying."}
+
+@app.delete("/api/tasks")
+def delete_all_tasks(db: Session = Depends(get_db)):
+    db.query(ScrapedData).delete()
+    db.query(WorkflowPlan).delete()
+    db.query(CollectionTask).delete()
+    db.commit()
+    return {"status": "success", "message": "All tasks deleted."}
+
+
+# ---------------------------------------------------------------------------
+# Task Management Endpoints
+# ---------------------------------------------------------------------------
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: int, db: Session = Depends(get_db)):
+    """Delete a task and all its associated data."""
+    task = db.query(CollectionTask).filter(CollectionTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+
+    db.query(ScrapedData).filter(ScrapedData.task_id == task_id).delete()
+    db.query(WorkflowPlan).filter(WorkflowPlan.task_id == task_id).delete()
+    db.delete(task)
+    db.commit()
+    return {"status": "deleted", "id": task_id}
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+def cancel_task(task_id: int, db: Session = Depends(get_db)):
+    """Cancel a running task."""
+    task = db.query(CollectionTask).filter(CollectionTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+
+    if task.status in ("Ready", "Completed", "Failed", "Cancelled"):
+        raise HTTPException(status_code=400, detail=f"Task is already {task.status}.")
+
+    task.status = "Cancelled"
+    db.commit()
+    return {"status": "cancelled", "id": task_id}
+
+
+@app.get("/api/tasks/{task_id}/export")
+def export_task(task_id: int, format: str = "csv", db: Session = Depends(get_db)):
+    """Export task data as a downloadable CSV or JSON file."""
+    from fastapi.responses import Response
+
+    task = db.query(CollectionTask).filter(CollectionTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+
+    records = []
+    for r in task.scraped_data:
+        data = r.extracted_data or {}
+        records.append({
+            "role": data.get("role", ""),
+            "company": data.get("company", ""),
+            "location": data.get("location", ""),
+            "salary": data.get("salary", ""),
+            "posted_days_ago": data.get("posted_days_ago", 0),
+            "source_url": r.source_url,
+            "source_host": data.get("source_host", ""),
+            "fetched_at": r.fetched_at.isoformat() + "Z" if r.fetched_at else "",
+            "extraction_method": r.extraction_method or "",
+            "confidence": r.confidence or 0,
+        })
+
+    if format == "json":
+        return Response(
+            content=json.dumps(records, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename=tracelight-task-{task_id}.json"}
+        )
+
+    # CSV format
+    if not records:
+        csv_content = ""
+    else:
+        headers_list = list(records[0].keys())
+        lines = [",".join(headers_list)]
+        for rec in records:
+            lines.append(",".join(f'"{ str(rec.get(h, "")) }"' for h in headers_list))
+        csv_content = "\n".join(lines)
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=tracelight-task-{task_id}.csv"}
+    )

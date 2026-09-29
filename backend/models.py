@@ -17,6 +17,7 @@ class CollectionTask(Base):
     sources_count = Column(Integer, default=0)
     duplicates_removed = Column(Integer, default=0)
     avg_confidence = Column(Float, nullable=True)
+    progress_detail = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
