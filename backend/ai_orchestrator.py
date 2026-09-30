@@ -37,11 +37,11 @@ def generate_workflow_plan(prompt: str) -> dict:
         "Given a user prompt, respond with ONLY a valid JSON object (no markdown, no commentary) "
         "with exactly these keys:\n"
         '  "steps": [list of step strings],\n'
-        '  "target_sources": [list of domain/URL strings],\n'
-        '  "data_schema": {field_name: type_string, ...}\n\n'
+        '  "target_sources": [list of 5 to 10 real job board domains (e.g. linkedin.com, indeed.com, glassdoor.com, wellfound.com, simplyhired.com, ziprecruiter.com, dice.com, monster.com)],\n'
+        '  "data_schema": {"role": "string", "company": "string", "location": "string", "salary": "string"}\n\n'
         "Example:\n"
         '{"steps":["Parse prompt","Find sources","Scrape","Clean","Done"],'
-        '"target_sources":["linkedin.com/jobs"],'
+        '"target_sources":["linkedin.com", "indeed.com", "glassdoor.com", "wellfound.com", "ziprecruiter.com"],'
         '"data_schema":{"role":"string","company":"string","location":"string","salary":"string"}}'
     )
 

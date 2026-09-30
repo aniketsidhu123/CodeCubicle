@@ -81,11 +81,14 @@ export default function Home() {
       ? Math.round(rows.reduce((a, r) => a + r.confidence, 0) / rows.length)
       : 0;
 
+  // Build dynamic source list from actual rows
+  const uniqueSources = Array.from(new Set(rows.map((r) => r.source_host).filter(Boolean)));
+
   const filteredRows = rows.filter((r) => {
-    const matchSource = filterSource < 0 || r.source_index === filterSource;
+    const matchSource = filterSource < 0 || r.source_host === uniqueSources[filterSource];
     const matchSearch =
       searchQuery === "" ||
-      (r.role + r.company + r.location + r.source_host)
+      (r.role + r.company + r.location + (r.source_host || ""))
         .toLowerCase()
         .includes(searchQuery.toLowerCase());
     return matchSource && matchSearch;
@@ -276,7 +279,11 @@ export default function Home() {
     await sleep(1000);
 
     // Done
-    const finalDupes = 3;
+    let finalDupes = 0;
+    if (apiResult && apiResult.id) {
+      const finalData = await fetchTaskDetails(apiResult.id);
+      finalDupes = finalData?.duplicates_removed || 0;
+    }
     setDupes(finalDupes);
     setCurrentStep(4);
     setPillText("Ready");
@@ -583,18 +590,16 @@ export default function Home() {
                   >
                     All sources
                   </button>
-                  {[...litSources]
-                    .sort((a, b) => a - b)
-                    .map((s) => (
+                  {uniqueSources.map((host, idx) => (
                       <button
-                        key={s}
+                        key={host}
                         className="chip"
-                        aria-pressed={filterSource === s}
+                        aria-pressed={filterSource === idx}
                         onClick={() =>
-                          setFilterSource((prev) => (prev === s ? -1 : s))
+                          setFilterSource((prev) => (prev === idx ? -1 : idx))
                         }
                       >
-                        {SOURCES[s]}
+                        {host}
                       </button>
                     ))}
                 </div>

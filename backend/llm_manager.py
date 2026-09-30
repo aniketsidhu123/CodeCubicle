@@ -108,6 +108,7 @@ class HuggingFaceManager:
             outputs = self._pipeline(
                 prompt,
                 max_new_tokens=max_tokens,
+                max_length=None,
                 temperature=temperature if temperature > 0 else 0.1,
                 do_sample=temperature > 0,
                 return_full_text=False

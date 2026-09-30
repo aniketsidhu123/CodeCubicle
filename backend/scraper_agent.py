@@ -74,6 +74,9 @@ def extract_data_with_llm(html_content: str, data_schema: dict) -> list:
         system_prompt = (
             "You are an expert data extraction agent. Extract records from the following "
             "web page text that match the requested JSON schema. Clean and validate the data.\n"
+            "Crucial Instructions:\n"
+            "- 'company' must be the actual hiring company, not the job board name (e.g. NOT 'Indeed' or 'Glassdoor').\n"
+            "- 'salary' must be the compensation amount if visible. If not visible in the text, return 'Not provided'.\n"
             "Return ONLY a valid JSON array of objects matching this schema, no markdown.\n"
             f"Schema:\n{json.dumps(data_schema, indent=2)}"
         )
@@ -97,7 +100,14 @@ def extract_data_with_llm(html_content: str, data_schema: dict) -> list:
             content = content[3:-3]
 
         records = json.loads(content)
-        return records if isinstance(records, list) else []
+        if isinstance(records, list):
+            # Normalize all keys to lowercase to prevent 'Unknown Role' errors
+            normalized_records = []
+            for r in records:
+                if isinstance(r, dict):
+                    normalized_records.append({k.lower(): v for k, v in r.items()})
+            return normalized_records
+        return []
 
     except json.JSONDecodeError as e:
         print(f"LLM returned invalid JSON: {e}")
@@ -121,7 +131,9 @@ def run_scraping_job(target_sources: list, data_schema: dict) -> list:
 
         print(f"Scraping {url}...")
         if not url.startswith("http"):
-            url = "https://" + url
+            if "." not in url:
+                url = url.strip() + ".com"
+            url = "https://" + url.lower()
 
         html = fetch_html(url)
         if not html:
